@@ -31,6 +31,13 @@ fixtures = [
 ]
 
 # --------------------------------------------------------------------------
+# DocType JS — Work Order buttons (Apply Style Recipe, Create SCO)
+# --------------------------------------------------------------------------
+doctype_js = {
+    "Work Order": "public/js/work_order.js",
+}
+
+# --------------------------------------------------------------------------
 # Document Events — additive roll-up of per-variant produced qty (C-06
 # half 2, done as a hook rather than a fork so the blast radius stays
 # minimal).
