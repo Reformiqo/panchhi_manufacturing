@@ -24,10 +24,105 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 MODULE = "Panchhi Manufacturing"
 
 # {doctype: [field_def, ...]} — consumed by create_custom_fields (idempotent).
-CUSTOM_FIELDS: dict[str, list[dict]] = {}
+CUSTOM_FIELDS: dict[str, list[dict]] = {
+	# ---- C-01: multi-variant Work Order --------------------------------
+	"Work Order": [
+		{
+			"fieldname": "custom_is_multi_variant",
+			"fieldtype": "Check",
+			"label": "Is Multi Variant",
+			"insert_after": "production_item",
+			"description": "One Work Order for every colour/size variant of a style. "
+			"The style template stays in Production Item; the real deliverables "
+			"live in the Variants table. Gates every Panchhi override — "
+			"unchecked Work Orders behave as stock ERPNext.",
+		},
+		{
+			"fieldname": "custom_variants_section",
+			"fieldtype": "Section Break",
+			"label": "Variants",
+			"insert_after": "custom_is_multi_variant",
+			"depends_on": "eval:doc.custom_is_multi_variant",
+		},
+		{
+			"fieldname": "custom_variants",
+			"fieldtype": "Table",
+			"label": "Variant Items",
+			"options": "Panchhi WO Variant",
+			"insert_after": "custom_variants_section",
+			"depends_on": "eval:doc.custom_is_multi_variant",
+		},
+	],
+	# ---- C-03: multi-item Job Card -------------------------------------
+	"Job Card": [
+		{
+			"fieldname": "custom_is_multi_variant",
+			"fieldtype": "Check",
+			"label": "Is Multi Variant",
+			"insert_after": "work_order",
+			"read_only": 1,
+			"fetch_from": "work_order.custom_is_multi_variant",
+		},
+		{
+			"fieldname": "custom_variant_items_section",
+			"fieldtype": "Section Break",
+			"label": "Variant Items",
+			"insert_after": "custom_is_multi_variant",
+			"depends_on": "eval:doc.custom_is_multi_variant",
+		},
+		{
+			"fieldname": "custom_items",
+			"fieldtype": "Table",
+			"label": "Variant Items",
+			"options": "Panchhi JC Variant Item",
+			"insert_after": "custom_variant_items_section",
+			"depends_on": "eval:doc.custom_is_multi_variant",
+		},
+		{
+			"fieldname": "custom_sfg_stock_entry",
+			"fieldtype": "Link",
+			"label": "SFG Receipt Stock Entry",
+			"options": "Stock Entry",
+			"insert_after": "custom_items",
+			"read_only": 1,
+			"no_copy": 1,
+			"description": "Auto-posted on Job Card submit: receives this "
+			"operation's output into stock, per variant (C-04).",
+		},
+	],
+	# ---- C-05: WO-driven Subcontracting Order --------------------------
+	"Subcontracting Order": [
+		{
+			"fieldname": "custom_work_order",
+			"fieldtype": "Link",
+			"label": "Work Order",
+			"options": "Work Order",
+			"insert_after": "purchase_order",
+			"read_only": 1,
+			"no_copy": 1,
+		},
+		{
+			"fieldname": "custom_operation",
+			"fieldtype": "Data",
+			"label": "Work Order Operation",
+			"insert_after": "custom_work_order",
+			"read_only": 1,
+			"no_copy": 1,
+		},
+	],
+}
 
 # (doctype, fieldname, property, value, property_type) — upserted each migrate.
-PROPERTY_SETTERS: list[tuple[str, str | None, str, str, str]] = []
+PROPERTY_SETTERS: list[tuple[str, str | None, str, str, str]] = [
+	# C-01 — BOM optional for in-house manufacture. WO.validate already
+	# guards every BOM code path behind `if self.bom_no`, so relaxing the
+	# field is sufficient.
+	("Work Order", "bom_no", "reqd", "0", "Check"),
+	# C-05 — BOM absent from subcontracting when WO-driven.
+	("Subcontracting Order Item", "bom", "reqd", "0", "Check"),
+	# C-05 — WO-driven SCO has no Purchase Order behind it.
+	("Subcontracting Order", "purchase_order", "reqd", "0", "Check"),
+]
 
 
 def after_migrate():

@@ -1,0 +1,95 @@
+{
+ "actions": [],
+ "creation": "2026-07-18 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "item_name",
+  "output_item",
+  "column_break_a",
+  "planned_qty",
+  "completed_qty",
+  "rejected_qty",
+  "pending_qty",
+  "status"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Variant Item",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "item_code.item_name",
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "Item Name",
+   "read_only": 1
+  },
+  {
+   "description": "SFG (or FG) received into stock for this variant when the Job Card completes. Auto-resolved from the operation's Finished Good when left blank.",
+   "fieldname": "output_item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Output Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "column_break_a",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "planned_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Planned Qty"
+  },
+  {
+   "default": "0",
+   "fieldname": "completed_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Completed Qty"
+  },
+  {
+   "default": "0",
+   "fieldname": "rejected_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Rejected Qty"
+  },
+  {
+   "default": "0",
+   "fieldname": "pending_qty",
+   "fieldtype": "Float",
+   "label": "Pending Qty",
+   "read_only": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nIn Process\nCompleted",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-18 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Panchhi Manufacturing",
+ "name": "Panchhi JC Variant Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

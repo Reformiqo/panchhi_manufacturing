@@ -31,28 +31,27 @@ fixtures = [
 ]
 
 # --------------------------------------------------------------------------
-# DocType JS (C-01 WO variants UI, C-03 JC multi-item UI — added per phase)
+# Document Events — additive roll-up of per-variant produced qty (C-06
+# half 2, done as a hook rather than a fork so the blast radius stays
+# minimal).
 # --------------------------------------------------------------------------
-# doctype_js = {
-#     "Work Order": "public/js/work_order.js",
-#     "Job Card": "public/js/job_card.js",
-# }
+doc_events = {
+    "Stock Entry": {
+        "on_submit": "panchhi_manufacturing.events.stock_entry.update_variant_produced_qty",
+        "on_cancel": "panchhi_manufacturing.events.stock_entry.update_variant_produced_qty",
+    },
+}
 
 # --------------------------------------------------------------------------
-# Document Events (C-02 WO submit branching, C-04 JC completion SFG receipt
-# — added per phase)
+# DocType Class Overrides — THE FORK (FRD sheet 'A. Core Overrides').
+# Every override is gated on Work Order.custom_is_multi_variant (or the
+# SCO's custom_work_order); unmarked documents behave as stock ERPNext,
+# byte for byte. Regression suite: tests/test_phase1_gating.py — run it
+# after every ERPNext upgrade.
 # --------------------------------------------------------------------------
-# doc_events = {}
-
-# --------------------------------------------------------------------------
-# DocType Class Overrides — THE FORK (C-06). Every override is gated on
-# Work Order.custom_is_multi_variant; unmarked documents behave as stock
-# ERPNext, byte for byte. DO NOT wire these before Q-01 client sign-off
-# (FRD sheet 'A. Core Overrides').
-# --------------------------------------------------------------------------
-# override_doctype_class = {
-#     "Work Order": "panchhi_manufacturing.overrides.work_order.MultiVariantWorkOrder",
-#     "Stock Entry": "panchhi_manufacturing.overrides.stock_entry.MultiVariantStockEntry",
-#     "Subcontracting Order": "panchhi_manufacturing.overrides.subcontracting_order.BOMLessSubcontractingOrder",
-#     "Job Card": "panchhi_manufacturing.overrides.job_card.MultiItemJobCard",
-# }
+override_doctype_class = {
+    "Work Order": "panchhi_manufacturing.overrides.work_order.MultiVariantWorkOrder",
+    "Stock Entry": "panchhi_manufacturing.overrides.stock_entry.MultiVariantStockEntry",
+    "Job Card": "panchhi_manufacturing.overrides.job_card.MultiItemJobCard",
+    "Subcontracting Order": "panchhi_manufacturing.overrides.subcontracting_order.PanchhiSubcontractingOrder",
+}
