@@ -77,6 +77,15 @@ class MultiItemJobCard(JobCard):
 		wo = frappe.get_doc("Work Order", self.work_order)
 		op_row = self._matching_operation_row(wo)
 
+		# C-12 — material was consumed for rejected pieces too. The
+		# consumption share is (completed + rejected) / plan, while only
+		# the completed pieces are received — so the cost of the loss is
+		# absorbed into the good output's valuation (standard costing).
+		processed_qty = sum(
+			flt(d.completed_qty) + flt(d.rejected_qty)
+			for d in (self.get("custom_items") or [])
+		)
+
 		se = frappe.new_doc("Stock Entry")
 		se.purpose = se.stock_entry_type = "Manufacture"
 		se.company = wo.company
@@ -92,7 +101,7 @@ class MultiItemJobCard(JobCard):
 		target = (op_row and op_row.fg_warehouse) or wo.fg_warehouse or wip
 
 		total_completed = sum(flt(d.completed_qty) for d in completed_rows)
-		self._append_consumption_rows(se, wo, op_row, wip, total_completed)
+		self._append_consumption_rows(se, wo, op_row, wip, processed_qty)
 
 		for d in completed_rows:
 			output_item = d.output_item or self._resolve_output_item(op_row, d.item_code)
@@ -131,10 +140,10 @@ class MultiItemJobCard(JobCard):
 				return op
 		return None
 
-	def _append_consumption_rows(self, se, wo, op_row, wip, total_completed):
+	def _append_consumption_rows(self, se, wo, op_row, wip, processed_qty):
 		"""Consume this operation's share of required items, proportional
-		to the quantity completed on this Job Card."""
-		share = (flt(total_completed) / flt(wo.qty)) if flt(wo.qty) else 0
+		to the quantity PROCESSED (completed + rejected) on this Job Card."""
+		share = (flt(processed_qty) / flt(wo.qty)) if flt(wo.qty) else 0
 		for r in wo.required_items:
 			belongs = (
 				(op_row and r.get("operation_row_id") and str(r.operation_row_id) == str(op_row.idx))
