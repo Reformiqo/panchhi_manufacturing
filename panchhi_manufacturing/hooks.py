@@ -57,6 +57,7 @@ doc_events = {
 # after every ERPNext upgrade.
 # --------------------------------------------------------------------------
 override_doctype_class = {
+    "Production Plan": "panchhi_manufacturing.overrides.production_plan.PanchhiProductionPlan",
     "Work Order": "panchhi_manufacturing.overrides.work_order.MultiVariantWorkOrder",
     "Stock Entry": "panchhi_manufacturing.overrides.stock_entry.MultiVariantStockEntry",
     "Job Card": "panchhi_manufacturing.overrides.job_card.MultiItemJobCard",

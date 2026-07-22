@@ -139,6 +139,77 @@ class MultiVariantWorkOrder(WorkOrder):
 				)
 			jc.save(ignore_permissions=True)
 
+	def validate_qty(self):
+		"""Stock caps WO.qty against the ONE linked Production Plan row —
+		a multi-variant WO's qty spans SEVERAL plan rows, so that check
+		misfires ('Cannot produce more than 2 for <style>' on a 4-piece
+		three-variant plan). Run the stock validator with the plan link
+		masked (keeps qty>0 / whole-number / subcontract checks), then
+		apply the plan cap PER VARIANT against its own row."""
+		if not cint(self.custom_is_multi_variant):
+			return super().validate_qty()
+
+		plan_item = self.production_plan_item
+		try:
+			self.production_plan_item = None
+			super().validate_qty()
+		finally:
+			self.production_plan_item = plan_item
+
+		if not (self.production_plan and plan_item):
+			return
+
+		allowance_pct = flt(
+			frappe.db.get_single_value(
+				"Manufacturing Settings", "overproduction_percentage_for_work_order"
+			)
+		)
+		rows = {
+			r.item_code: r
+			for r in frappe.get_all(
+				"Production Plan Item",
+				filters={"parent": self.production_plan},
+				fields=["item_code", "planned_qty", "ordered_qty"],
+			)
+		}
+		for v in self.custom_variants:
+			row = rows.get(v.item_code)
+			if not row:
+				continue
+			max_qty = (
+				flt(row.planned_qty) * (1 + allowance_pct / 100.0) - flt(row.ordered_qty)
+			)
+			if flt(v.qty) > max_qty:
+				from erpnext.manufacturing.doctype.work_order.work_order import (
+					OverProductionError,
+				)
+
+				frappe.throw(
+					_("Variant {0}: cannot produce more than {1} against Production Plan {2}.").format(
+						v.item_code, max_qty, self.production_plan
+					),
+					OverProductionError,
+				)
+
+	def update_production_plan_status(self):
+		"""Stock pushes THIS Work Order's total produced qty into the ONE
+		linked plan row — wrong for a multi-variant WO that serves several
+		plan rows. Distribute per-variant instead, reusing the plan's own
+		row updater so pending qty + plan status recompute stock-style."""
+		if not cint(self.custom_is_multi_variant) or not self.production_plan:
+			return super().update_production_plan_status()
+
+		plan = frappe.get_doc("Production Plan", self.production_plan)
+		rows_by_item = {}
+		for row in plan.po_items:
+			rows_by_item.setdefault(row.item_code, row.name)
+		for v in self.custom_variants:
+			row_name = rows_by_item.get(v.item_code)
+			if row_name:
+				plan.run_method(
+					"update_produced_pending_qty", flt(v.produced_qty), row_name
+				)
+
 	def update_variant_produced_qty(self, produced_by_item: dict[str, float]):
 		"""Called from the Stock Entry submit/cancel hook: write per-variant
 		produced qty, roll up the scalar, and re-derive status."""
@@ -156,3 +227,8 @@ class MultiVariantWorkOrder(WorkOrder):
 		self.db_set("produced_qty", total, update_modified=False)
 		self.reload()
 		self.update_status()
+		# Stock wires plan sync through update_work_order_qty, which the
+		# multi-variant flow bypasses — trigger it here so plan rows track
+		# their own variant's produced qty.
+		if self.production_plan:
+			self.update_production_plan_status()
