@@ -197,6 +197,8 @@ class TestPhase4ProductionPlan(IntegrationTestCase):
 	# Produced-qty sync — plan rows track their own variant
 	# ------------------------------------------------------------------
 	def test_variant_production_updates_matching_plan_rows(self):
+		"""Produce two of the three variants via REAL Manufacture Stock
+		Entries and assert each plan row tracks its own variant."""
 		plan = self._make_plan([
 			(self.variants[0], self.boms[self.variants[0]], 2),
 			(self.variants[1], self.boms[self.variants[1]], 1),
@@ -208,11 +210,32 @@ class TestPhase4ProductionPlan(IntegrationTestCase):
 		)[0]
 		wo = frappe.get_doc("Work Order", wo_name)
 		wo.skip_transfer = 1
+		wo.wip_warehouse = self.wip_wh
+		wo.fg_warehouse = self.fg_wh
 		wo.flags.ignore_validate_update_after_submit = True
 		wo.submit()
 
-		# Produce variant 0 fully (2) and variant 1 fully (1); variant 2 not yet.
-		wo.update_variant_produced_qty({self.variants[0]: 2, self.variants[1]: 1})
+		# Raw stock so the Manufacture entry can consume something.
+		receipt = frappe.get_doc({
+			"doctype": "Stock Entry", "purpose": "Material Receipt",
+			"stock_entry_type": "Material Receipt", "company": self.company,
+			"items": [{"item_code": self.raw, "qty": 50, "t_warehouse": self.wip_wh, "basic_rate": 5}],
+		})
+		receipt.insert(ignore_permissions=True)
+		receipt.submit()
+
+		se = frappe.get_doc({
+			"doctype": "Stock Entry", "purpose": "Manufacture",
+			"stock_entry_type": "Manufacture", "company": self.company,
+			"work_order": wo.name,
+			"items": [
+				{"item_code": self.raw, "qty": 3, "s_warehouse": self.wip_wh},
+				{"item_code": self.variants[0], "qty": 2, "t_warehouse": self.fg_wh, "is_finished_item": 1},
+				{"item_code": self.variants[1], "qty": 1, "t_warehouse": self.fg_wh, "is_finished_item": 1},
+			],
+		})
+		se.insert(ignore_permissions=True)
+		se.submit()
 
 		plan.reload()
 		produced = {d.item_code: flt(d.produced_qty) for d in plan.po_items}
@@ -222,3 +245,26 @@ class TestPhase4ProductionPlan(IntegrationTestCase):
 		pending = {d.item_code: flt(d.pending_qty) for d in plan.po_items}
 		self.assertEqual(pending[self.variants[0]], 0)
 		self.assertEqual(pending[self.variants[2]], 1)
+
+		# IDEMPOTENCE: produced qty is DERIVED from the ledger, so
+		# re-running the recompute (repost, amend, duplicate hook) must
+		# not double-count.
+		wo.reload()
+		wo.update_variant_produced_qty()
+		wo.reload()
+		self.assertEqual(
+			{d.item_code: flt(d.produced_qty) for d in wo.custom_variants},
+			{self.variants[0]: 2.0, self.variants[1]: 1.0, self.variants[2]: 0.0},
+			"recompute must be idempotent, never incremental",
+		)
+		self.assertEqual(flt(wo.produced_qty), 3)
+
+		# CANCEL unwinds — same derived path, no sign juggling.
+		se.cancel()
+		wo.reload()
+		self.assertEqual(flt(wo.produced_qty), 0)
+		plan.reload()
+		self.assertEqual(
+			{d.item_code: flt(d.produced_qty) for d in plan.po_items},
+			{v: 0.0 for v in self.variants},
+		)

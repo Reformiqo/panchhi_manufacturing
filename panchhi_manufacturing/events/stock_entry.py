@@ -25,19 +25,21 @@ def update_variant_produced_qty(doc, method=None):
 	):
 		return
 
+	# Only bother when this entry actually touched a planned variant —
+	# intermediate SFG receipts are not "production" of the plan.
 	variant_items = set(
 		frappe.get_all(
 			"Panchhi WO Variant", filters={"parent": doc.work_order}, pluck="item_code"
 		)
 	)
-	sign = -1 if method == "on_cancel" else 1
-	produced: dict[str, float] = {}
-	for d in doc.get("items"):
-		if d.is_finished_item and d.item_code in variant_items:
-			produced[d.item_code] = produced.get(d.item_code, 0.0) + sign * flt(d.qty)
-
-	if not produced:
+	if not any(
+		d.is_finished_item and d.item_code in variant_items for d in doc.get("items")
+	):
 		return
 
-	wo = frappe.get_doc("Work Order", doc.work_order)
-	wo.update_variant_produced_qty(produced)
+	# The Work Order DERIVES its numbers from the ledger (see
+	# MultiVariantWorkOrder.update_variant_produced_qty) — this hook only
+	# tells it "something changed, recompute". No deltas are passed, so
+	# submit and cancel are handled by exactly the same code path and a
+	# repeat firing is harmless.
+	frappe.get_doc("Work Order", doc.work_order).update_variant_produced_qty()

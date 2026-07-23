@@ -119,16 +119,28 @@ class MultiVariantStockEntry(StockEntry):
 		return allowed, variant_caps
 
 	def validate(self):
-		# Stock validate() zeroes fg_completed_qty whenever from_bom is
-		# unset — but BOM-less manufacture is the point of this app
-		# (C-01/C-04). Preserve it across super() for multi-variant WOs,
-		# recomputed from the finished rows so it can't drift.
+		# fg_completed_qty needs handling on BOTH sides of super():
+		#
+		#  BEFORE — stock's validate_work_order() throws "For Quantity
+		#    (Manufactured Qty) is mandatory" when it is empty. On a
+		#    multi-variant entry the answer is simply the sum of the
+		#    finished rows, so derive it rather than making the user
+		#    retype what the grid already says.
+		#  AFTER  — stock's validate() then zeroes it whenever from_bom
+		#    is unset, and BOM-less manufacture is the whole point of
+		#    this app (C-01/C-04). Restore the same derived figure.
+		is_mv_manufacture = self._multi_variant_wo() and self.purpose == "Manufacture"
+		if is_mv_manufacture and not flt(self.fg_completed_qty):
+			self.fg_completed_qty = self._finished_qty()
+
 		super().validate()
-		if self._multi_variant_wo() and self.purpose == "Manufacture" and not self.from_bom:
-			self.fg_completed_qty = sum(
-				flt(d.qty) for d in self.get("items") if d.is_finished_item
-			)
+
+		if is_mv_manufacture and not self.from_bom:
+			self.fg_completed_qty = self._finished_qty()
 		self._suppress_whole_wo_operating_cost()
+
+	def _finished_qty(self):
+		return sum(flt(d.qty) for d in self.get("items") if d.is_finished_item)
 
 	def _suppress_whole_wo_operating_cost(self):
 		"""C-13 — every operation's SE already carries that operation's

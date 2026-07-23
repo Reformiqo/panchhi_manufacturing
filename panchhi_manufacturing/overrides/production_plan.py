@@ -104,8 +104,13 @@ class PanchhiProductionPlan(ProductionPlan):
 
 		wo.reserve_stock = self.reserve_stock
 		try:
+			# ignore_mandatory only — stock's create_work_order parity. NOT
+			# ignore_validate: that would skip validate() wholesale, and with
+			# it _validate_variants (duplicate rows, qty <= 0) and the qty
+			# roll-up. A bad grouping would then sit silently in the draft
+			# until the planner hit Submit. Verified 2026-07-23 that the
+			# insert succeeds on the client's own plan without the flag.
 			wo.flags.ignore_mandatory = True
-			wo.flags.ignore_validate = True
 			wo.insert()
 			return wo.name
 		except Exception:

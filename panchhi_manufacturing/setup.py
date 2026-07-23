@@ -52,6 +52,18 @@ CUSTOM_FIELDS: dict[str, list[dict]] = {
 			"insert_after": "custom_variants_section",
 			"depends_on": "eval:doc.custom_is_multi_variant",
 		},
+		{
+			# MUST close the section. A Section Break owns every field up to
+			# the NEXT Section Break, so without this the "Variants" break
+			# swallows the rest of stock's Production Item section — and its
+			# depends_on then hides Company / Qty To Manufacture / BOM No /
+			# Sales Order / Project on every UNCHECKED Work Order. That is
+			# the exact blast radius the FRD forbids. No depends_on here:
+			# this break must always render so the stock fields come back.
+			"fieldname": "custom_variants_end_section",
+			"fieldtype": "Section Break",
+			"insert_after": "custom_variants",
+		},
 	],
 	# ---- C-03: multi-item Job Card -------------------------------------
 	"Job Card": [
@@ -88,6 +100,14 @@ CUSTOM_FIELDS: dict[str, list[dict]] = {
 			"no_copy": 1,
 			"description": "Auto-posted on Job Card submit: receives this "
 			"operation's output into stock, per variant (C-04).",
+		},
+		{
+			# Closes the section — see custom_variants_end_section on Work
+			# Order. Without it the gated break hides stock's bom_no and
+			# is_subcontracted on every non-multi-variant Job Card.
+			"fieldname": "custom_variant_items_end_section",
+			"fieldtype": "Section Break",
+			"insert_after": "custom_sfg_stock_entry",
 		},
 	],
 	# ---- C-05: WO-driven Subcontracting Order --------------------------

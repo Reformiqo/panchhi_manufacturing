@@ -210,20 +210,43 @@ class MultiVariantWorkOrder(WorkOrder):
 					"update_produced_pending_qty", flt(v.produced_qty), row_name
 				)
 
-	def update_variant_produced_qty(self, produced_by_item: dict[str, float]):
-		"""Called from the Stock Entry submit/cancel hook: write per-variant
-		produced qty, roll up the scalar, and re-derive status."""
+	def update_variant_produced_qty(self, produced_by_item: dict[str, float] | None = None):
+		"""Recompute per-variant produced qty from the ledger, roll up the
+		scalar, and re-derive status.
+
+		DERIVED, never incremented: sum the finished rows of every
+		submitted Manufacture Stock Entry against this Work Order. An
+		incremental `+=` double-counts whenever the hook fires more than
+		once for the same entry (repost, amend, a manual resync), and
+		drifts permanently once it does. Deriving is idempotent and
+		self-healing — re-running it can only converge on the truth.
+
+		`produced_by_item` is accepted for signature compatibility with
+		the doc_events hook but is deliberately ignored.
+		"""
+		produced = dict(
+			frappe.db.sql(
+				"""
+				SELECT sed.item_code, SUM(sed.qty)
+				FROM `tabStock Entry Detail` sed
+				JOIN `tabStock Entry` se ON se.name = sed.parent
+				WHERE se.docstatus = 1
+				  AND se.purpose = 'Manufacture'
+				  AND se.work_order = %s
+				  AND sed.is_finished_item = 1
+				GROUP BY sed.item_code
+				""",
+				self.name,
+			)
+			or []
+		)
+
 		total = 0.0
 		for v in self.custom_variants:
-			if v.item_code in produced_by_item:
-				v.db_set(
-					"produced_qty",
-					max(0.0, flt(v.produced_qty) + flt(produced_by_item[v.item_code])),
-					update_modified=False,
-				)
-			total += flt(
-				frappe.db.get_value("Panchhi WO Variant", v.name, "produced_qty")
-			)
+			qty = flt(produced.get(v.item_code))
+			if flt(v.produced_qty) != qty:
+				v.db_set("produced_qty", qty, update_modified=False)
+			total += qty
 		self.db_set("produced_qty", total, update_modified=False)
 		self.reload()
 		self.update_status()
