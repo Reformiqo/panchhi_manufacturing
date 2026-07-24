@@ -100,6 +100,24 @@ panchhi.make_sco_dialog = function (frm, sub_ops) {
                 options: "Supplier",
             },
             {
+                // The job worker's warehouse. MUST differ from the WIP
+                // warehouse the raw materials are reserved in, or ERPNext
+                // rejects the Send-to-Subcontractor transfer — the server
+                // guard in make_subcontracting_order throws otherwise.
+                fieldname: "supplier_warehouse",
+                label: __("Job Worker Warehouse"),
+                fieldtype: "Link",
+                options: "Warehouse",
+                reqd: 1,
+                get_query: () => ({
+                    filters: {
+                        company: frm.doc.company,
+                        is_group: 0,
+                        name: ["!=", frm.doc.wip_warehouse],
+                    },
+                }),
+            },
+            {
                 fieldname: "service_rate",
                 label: __("Rate per Unit"),
                 fieldtype: "Currency",
@@ -117,6 +135,7 @@ panchhi.make_sco_dialog = function (frm, sub_ops) {
                     service_item: values.service_item,
                     supplier: values.supplier,
                     service_rate: values.service_rate,
+                    supplier_warehouse: values.supplier_warehouse,
                 },
                 callback(r) {
                     d.hide();
