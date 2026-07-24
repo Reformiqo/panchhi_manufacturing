@@ -17,7 +17,10 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt
 
-from erpnext.manufacturing.doctype.job_card.job_card import JobCard
+from erpnext.manufacturing.doctype.job_card.job_card import (
+	JobCard,
+	OperationSequenceError,
+)
 
 
 class MultiItemJobCard(JobCard):
@@ -28,6 +31,63 @@ class MultiItemJobCard(JobCard):
 		super().validate()
 		if cint(self.custom_is_multi_variant):
 			self._roll_up_variant_items()
+
+	# ------------------------------------------------------------------
+	# Operation sequence — subcontracted stages have no Job Card
+	# ------------------------------------------------------------------
+	def validate_sequence_id(self):
+		"""Stock blocks a Job Card until every prior operation (by
+		sequence_id) has completed_qty on its Work Order Operation row.
+		In the FRD's Operation-as-Transaction model a SUBCONTRACTED stage
+		transacts through a Subcontracting Order and never gets a Job
+		Card, so its completed_qty stays 0 — which would permanently block
+		every downstream in-house Job Card. Enforce the sequence only
+		against prior IN-HOUSE operations; subcontracted stages are gated
+		instead by material availability (the SFG receipt cannot consume a
+		semi-finished good that has not been received yet)."""
+		if not cint(self.custom_is_multi_variant):
+			return super().validate_sequence_id()
+		if self.is_new() or self.is_corrective_job_card:
+			return
+		if not (self.work_order and self.sequence_id):
+			return
+
+		current_operation_qty = 0.0
+		data = self.get_current_operation_data()
+		if data and len(data) > 0:
+			current_operation_qty = flt(data[0].completed_qty)
+		current_operation_qty += flt(self.total_completed_qty)
+
+		prior = frappe.get_all(
+			"Work Order Operation",
+			fields=["operation", "status", "completed_qty", "sequence_id", "is_subcontracted"],
+			filters={
+				"docstatus": 1,
+				"parent": self.work_order,
+				"sequence_id": ("<", self.sequence_id),
+			},
+			order_by="sequence_id, idx",
+		)
+		msg = _("Job Card {0}: As per the sequence of the operations in the work order {1}").format(
+			self.name, self.work_order
+		)
+		for row in prior:
+			if cint(row.is_subcontracted):
+				continue  # tracked via a Subcontracting Order, not a Job Card
+			if not row.completed_qty:
+				frappe.throw(
+					_("{0}, complete the operation {1} before the operation {2}.").format(
+						msg, row.operation, self.operation
+					),
+					OperationSequenceError,
+				)
+			if row.status != "Completed" and row.completed_qty < current_operation_qty:
+				frappe.throw(
+					_("{0}, complete the operation {1} before the operation {2}.").format(
+						msg, row.operation, self.operation
+					),
+					OperationSequenceError,
+				)
 
 	def _roll_up_variant_items(self):
 		total = 0.0
