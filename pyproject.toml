@@ -19,6 +19,13 @@ build-backend = "flit_core.buildapi"
 [tool.bench.dev-dependencies]
 # package_name = "~=1.1.0"
 
+# Frappe Cloud reads these to select a compatible bench when installing the app.
+# This app builds on ERPNext v16's native per-operation semi-finished-goods, so
+# it requires the v16 series of both Frappe and ERPNext.
+[tool.bench.frappe-dependencies]
+frappe = ">=16.0.0,<17.0.0"
+erpnext = ">=16.0.0,<17.0.0"
+
 # These apt dependencies will be installed from Ubuntu repositories when you host your app on Frappe Cloud
 [deploy.dependencies.apt]
 packages = []
