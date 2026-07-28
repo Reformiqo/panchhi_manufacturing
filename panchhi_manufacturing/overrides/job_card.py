@@ -52,6 +52,19 @@ class MultiItemJobCard(JobCard):
 		if not (self.work_order and self.sequence_id):
 			return
 
+		# Only enforce operation order when THIS card actually records
+		# completion. A draft card with nothing completed cannot violate the
+		# sequence — and must not be blocked by an earlier operation that has
+		# simply not run yet. This matters when the Work Order stamps the
+		# variant plan onto EVERY draft Job Card at submit time (a plain save):
+		# a later operation's card (higher sequence_id) would otherwise trip on
+		# the still-uncompleted earlier operation and block the whole submit.
+		this_card_completed = flt(self.total_completed_qty) + sum(
+			flt(d.completed_qty) for d in (self.get("custom_items") or [])
+		)
+		if this_card_completed <= 0:
+			return
+
 		current_operation_qty = 0.0
 		data = self.get_current_operation_data()
 		if data and len(data) > 0:
@@ -122,6 +135,23 @@ class MultiItemJobCard(JobCard):
 		super().on_cancel()
 
 	def _post_sfg_receipt(self):
+		wo = frappe.get_doc("Work Order", self.work_order)
+		op_row = self._matching_operation_row(wo)
+
+		# A BOM-driven route (every operation SFG-less and in-house — e.g.
+		# fetched from the variants' default BOMs) is a flat manufacture: the
+		# finished variants are received, and ALL raw materials consumed, ONCE
+		# — on the LAST operation's Job Card. Earlier operations' Job Cards
+		# track labour only, exactly like a standard multi-operation Work
+		# Order. Without this guard each of the N operations' Job Cards would
+		# receive the full variant qty (N× over-production), because an
+		# SFG-less operation resolves its output to the variant itself.
+		bom_driven = bool(wo.operations) and not any(
+			o.finished_good or cint(o.is_subcontracted) for o in wo.operations
+		)
+		if bom_driven and not (op_row and op_row.name == wo.operations[-1].name):
+			return
+
 		completed_rows = [
 			d for d in (self.get("custom_items") or []) if flt(d.completed_qty) > 0
 		]
@@ -133,9 +163,6 @@ class MultiItemJobCard(JobCard):
 				),
 				title=_("Nothing To Receive"),
 			)
-
-		wo = frappe.get_doc("Work Order", self.work_order)
-		op_row = self._matching_operation_row(wo)
 
 		# C-12 — material was consumed for rejected pieces too. The
 		# consumption share is (completed + rejected) / plan, while only
@@ -161,7 +188,9 @@ class MultiItemJobCard(JobCard):
 		target = (op_row and op_row.fg_warehouse) or wo.fg_warehouse or wip
 
 		total_completed = sum(flt(d.completed_qty) for d in completed_rows)
-		self._append_consumption_rows(se, wo, op_row, wip, processed_qty)
+		self._append_consumption_rows(
+			se, wo, op_row, wip, processed_qty, consume_all=bom_driven
+		)
 
 		for d in completed_rows:
 			output_item = d.output_item or self._resolve_output_item(op_row, d.item_code)
@@ -200,26 +229,38 @@ class MultiItemJobCard(JobCard):
 				return op
 		return None
 
-	def _append_consumption_rows(self, se, wo, op_row, wip, processed_qty):
-		"""Consume this operation's share of required items, proportional
-		to the quantity PROCESSED (completed + rejected) on this Job Card."""
+	def _append_consumption_rows(self, se, wo, op_row, wip, processed_qty, consume_all=False):
+		"""Consume required items proportional to the quantity PROCESSED
+		(completed + rejected) on this Job Card.
+
+		`consume_all` — a BOM-driven route has no per-operation material
+		assignment: its whole required-items table is consumed once, on the
+		last operation's receipt. Draw those from the row's own source
+		warehouse (where the BOM places the raw material) rather than a WIP
+		store that never received a transfer. The per-operation SFG model
+		(`consume_all` False) keeps consuming only THIS operation's share
+		out of WIP, unchanged."""
 		share = (flt(processed_qty) / flt(wo.qty)) if flt(wo.qty) else 0
 		for r in wo.required_items:
-			belongs = (
-				(op_row and r.get("operation_row_id") and str(r.operation_row_id) == str(op_row.idx))
-				or (r.get("operation") and r.operation == self.operation)
-			)
+			if consume_all:
+				belongs = True
+			else:
+				belongs = (
+					(op_row and r.get("operation_row_id") and str(r.operation_row_id) == str(op_row.idx))
+					or (r.get("operation") and r.operation == self.operation)
+				)
 			if not belongs:
 				continue
 			qty = flt(r.required_qty) * share
 			if qty <= 0:
 				continue
+			s_warehouse = (r.source_warehouse or wip) if consume_all else (wip or r.source_warehouse)
 			se.append(
 				"items",
 				{
 					"item_code": r.item_code,
 					"qty": qty,
-					"s_warehouse": wip or r.source_warehouse,
+					"s_warehouse": s_warehouse,
 					"uom": r.stock_uom,
 				},
 			)

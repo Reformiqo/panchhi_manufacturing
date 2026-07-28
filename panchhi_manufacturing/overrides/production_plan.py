@@ -100,7 +100,7 @@ class PanchhiProductionPlan(ProductionPlan):
 				{"item_code": d["production_item"], "qty": flt(d.get("qty"))},
 			)
 
-		self._apply_style_recipe(wo, template, total_qty)
+		self._apply_recipe_or_boms(wo, template, total_qty)
 
 		wo.reserve_stock = self.reserve_stock
 		try:
@@ -123,19 +123,42 @@ class PanchhiProductionPlan(ProductionPlan):
 				)
 			)
 
-	def _apply_style_recipe(self, wo, template, total_qty):
-		"""Prefill operations + materials when a Style Recipe exists.
-		Optional by design (FRD C-07) — silently skipped otherwise."""
-		if not frappe.db.exists(
-			"Style Recipe", {"style_item": template, "enabled": 1}
-		):
+	def _apply_recipe_or_boms(self, wo, template, total_qty):
+		"""Prefill operations + materials for the grouped Work Order.
+
+		Style Recipe first when the style defines one (FRD C-07). Otherwise
+		fall back to the variants' default BOMs — Panchhi maintains a BOM
+		per variant, not Style Recipes, so without this the grouped WO would
+		come out empty (no operations, no required items, no Job Cards).
+		Silently skipped only when NEITHER a recipe NOR any variant BOM
+		exists, leaving the WO for the planner to fill by hand.
+		"""
+		if frappe.db.exists("Style Recipe", {"style_item": template, "enabled": 1}):
+			from panchhi_manufacturing.panchhi_manufacturing.doctype.style_recipe.style_recipe import (
+				get_recipe_details,
+			)
+
+			details = get_recipe_details(template, qty=total_qty)
+			for op in details["operations"]:
+				wo.append("operations", op)
+			for rm in details["required_items"]:
+				wo.append("required_items", rm)
 			return
-		from panchhi_manufacturing.panchhi_manufacturing.doctype.style_recipe.style_recipe import (
-			get_recipe_details,
+
+		from panchhi_manufacturing.overrides.work_order import (
+			build_production_lines_from_variant_boms,
 		)
 
-		details = get_recipe_details(template, qty=total_qty)
-		for op in details["operations"]:
+		lines = build_production_lines_from_variant_boms(
+			self.company,
+			wo.get("custom_variants"),
+			total_qty,
+			wip_warehouse=wo.wip_warehouse,
+			source_warehouse=wo.source_warehouse,
+		)
+		if not lines:
+			return
+		for op in lines["operations"]:
 			wo.append("operations", op)
-		for rm in details["required_items"]:
+		for rm in lines["required_items"]:
 			wo.append("required_items", rm)

@@ -78,8 +78,18 @@ class MultiVariantWorkOrder(WorkOrder):
 		"""FRD L-03 / R-05 — an operation without an output SFG would
 		complete without receiving anything into stock. Every operation
 		except the LAST must name its finished_good (the last operation's
-		outputs are the variant items themselves)."""
+		outputs are the variant items themselves).
+
+		This applies ONLY to the operation-as-transaction model — i.e. when
+		the route actually uses per-operation SFG receipts (some operation
+		names an SFG, or a stage is subcontracted). A pure BOM-driven route
+		(every operation SFG-less and in-house, e.g. fetched from the
+		variants' default BOMs) is a flat manufacture with a single finished
+		receipt on the last operation, so the rule does not apply."""
 		operations = self.get("operations") or []
+		uses_sfg_model = any(d.finished_good or cint(d.is_subcontracted) for d in operations)
+		if not uses_sfg_model:
+			return
 		for d in operations[:-1]:
 			if not d.finished_good:
 				frappe.throw(
@@ -255,3 +265,163 @@ class MultiVariantWorkOrder(WorkOrder):
 		# their own variant's produced qty.
 		if self.production_plan:
 			self.update_production_plan_status()
+
+
+# ----------------------------------------------------------------------
+# BOM-driven prefill (client maintains per-variant BOMs, not Style Recipes)
+# ----------------------------------------------------------------------
+def get_default_bom(item_code: str) -> str | None:
+	"""The item's default active BOM, else any active BOM."""
+	if not item_code:
+		return None
+	return frappe.db.get_value(
+		"BOM", {"item": item_code, "is_active": 1, "is_default": 1}, "name"
+	) or frappe.db.get_value(
+		"BOM", {"item": item_code, "is_active": 1}, "name"
+	)
+
+
+def build_production_lines_from_variant_boms(
+	company, variants, total_qty, wip_warehouse=None, source_warehouse=None
+):
+	"""Aggregate each variant's DEFAULT BOM into Work-Order-shaped lines.
+
+	Panchhi maintains a full BOM per colour/size variant (operations +
+	materials) rather than a Style Recipe, so a grouped multi-variant Work
+	Order derives its route from those BOMs:
+
+	  * Required Items — every variant's default BOM exploded to raw
+	    materials, scaled to that variant's planned qty via ERPNext's own
+	    ``get_bom_items_as_dict`` (identical division-by-bom.quantity as a
+	    single-item Work Order), then merged across variants by
+	    (item_code, source_warehouse).
+	  * Operations — variants of one style share a production route, so the
+	    operations come from a representative variant BOM (the first one
+	    that carries operations), time scaled to the grouped total qty.
+	    They are SFG-less and in-house: a flat manufacture whose single
+	    finished receipt happens on the last operation's Job Card.
+
+	Returns ``None`` when NO variant has a BOM (caller keeps the WO empty
+	for the planner to fill by hand, exactly as before).
+	"""
+	from erpnext.manufacturing.doctype.bom.bom import get_bom_items_as_dict
+
+	merged: dict[tuple, dict] = {}
+	representative_bom = None
+	found_any = False
+
+	for v in variants or []:
+		item_code = v.get("item_code") if isinstance(v, dict) else v.item_code
+		vqty = flt(v.get("qty") if isinstance(v, dict) else v.qty)
+		bom = get_default_bom(item_code)
+		if not bom:
+			continue
+		found_any = True
+		if representative_bom is None and frappe.get_cached_value("BOM", bom, "with_operations"):
+			representative_bom = bom
+		if vqty <= 0:
+			continue
+		for it in get_bom_items_as_dict(bom, company, qty=vqty, fetch_exploded=1).values():
+			key = (it.get("item_code"), it.get("source_warehouse"))
+			row = merged.get(key)
+			if not row:
+				row = merged[key] = {
+					"item_code": it.get("item_code"),
+					"item_name": it.get("item_name"),
+					"required_qty": 0.0,
+					"stock_uom": it.get("stock_uom"),
+					"source_warehouse": it.get("source_warehouse") or source_warehouse or wip_warehouse,
+				}
+			row["required_qty"] += flt(it.get("qty"))
+
+	if not found_any:
+		return None
+
+	operations = []
+	if representative_bom:
+		bom_qty = flt(frappe.get_cached_value("BOM", representative_bom, "quantity")) or 1.0
+		scale = flt(total_qty) / bom_qty if bom_qty else 1.0
+		for op in frappe.get_all(
+			"BOM Operation",
+			filters={"parent": representative_bom},
+			fields=["operation", "workstation", "description", "time_in_mins", "sequence_id", "idx"],
+			order_by="idx",
+		):
+			operations.append(
+				{
+					"operation": op.operation,
+					"workstation": op.workstation,
+					"description": op.description,
+					"time_in_mins": flt(op.time_in_mins) * scale,
+					"sequence_id": op.sequence_id or op.idx,
+				}
+			)
+
+	return {
+		"operations": operations,
+		"required_items": list(merged.values()),
+		"representative_bom": representative_bom,
+	}
+
+
+@frappe.whitelist()
+def fetch_production_details(work_order: str):
+	"""(Re)build a multi-variant Work Order's operations + required items.
+
+	Style Recipe first (backward compatible); otherwise derive from the
+	variants' default BOMs. Lets a planner populate an already-created
+	grouped Work Order that came out empty, without recreating it.
+	"""
+	wo = frappe.get_doc("Work Order", work_order)
+	if not cint(wo.custom_is_multi_variant):
+		frappe.throw(_("{0} is not a Multi-Variant Work Order.").format(wo.name))
+	if wo.docstatus != 0:
+		frappe.throw(_("Operations & materials can only be fetched on a draft Work Order."))
+	if not wo.get("custom_variants"):
+		frappe.throw(_("Add at least one row to the Variants table first."))
+
+	total_qty = sum(flt(v.qty) for v in wo.custom_variants)
+
+	if frappe.db.exists("Style Recipe", {"style_item": wo.production_item, "enabled": 1}):
+		from panchhi_manufacturing.panchhi_manufacturing.doctype.style_recipe.style_recipe import (
+			get_recipe_details,
+		)
+
+		details = get_recipe_details(wo.production_item, qty=total_qty)
+		operations, required_items = details["operations"], details["required_items"]
+		source = _("Style Recipe")
+	else:
+		lines = build_production_lines_from_variant_boms(
+			wo.company,
+			wo.custom_variants,
+			total_qty,
+			wip_warehouse=wo.wip_warehouse,
+			source_warehouse=wo.source_warehouse,
+		)
+		if not lines:
+			frappe.throw(
+				_(
+					"No enabled Style Recipe for {0}, and none of its variants has a default "
+					"BOM. Create a BOM for the variant items (or a Style Recipe for the style) "
+					"and try again."
+				).format(wo.production_item),
+				title=_("Nothing To Fetch"),
+			)
+		operations, required_items = lines["operations"], lines["required_items"]
+		source = _("variant BOMs")
+
+	wo.set("operations", [])
+	wo.set("required_items", [])
+	for op in operations:
+		wo.append("operations", op)
+	for rm in required_items:
+		wo.append("required_items", rm)
+	wo.save(ignore_permissions=True)
+	frappe.msgprint(
+		_("Fetched {0} operation(s) and {1} material line(s) from {2}.").format(
+			len(operations), len(required_items), source
+		),
+		alert=True,
+		indicator="green",
+	)
+	return wo.name

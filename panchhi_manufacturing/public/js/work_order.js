@@ -14,8 +14,8 @@ frappe.ui.form.on("Work Order", {
 
         if (frm.doc.docstatus === 0 && frm.doc.production_item) {
             frm.add_custom_button(
-                __("Apply Style Recipe"),
-                () => panchhi.apply_style_recipe(frm),
+                __("Fetch Operations & Materials"),
+                () => panchhi.fetch_production_details(frm),
                 __("Panchhi")
             );
         }
@@ -35,38 +35,29 @@ frappe.ui.form.on("Work Order", {
 
 window.panchhi = window.panchhi || {};
 
-panchhi.apply_style_recipe = function (frm) {
-    const total_qty = (frm.doc.custom_variants || []).reduce(
-        (s, d) => s + (d.qty || 0), 0
-    );
+// Populate the grouped Work Order's operations + required items. The server
+// uses the style's Style Recipe when one exists, otherwise derives the route
+// from the variants' default BOMs (Panchhi maintains BOMs, not recipes). Runs
+// server-side and saves, so an already-created empty draft can be filled in
+// place — needs the Work Order saved first (it reads the persisted variants).
+panchhi.fetch_production_details = function (frm) {
+    if (frm.is_new()) {
+        frappe.msgprint(
+            __("Save the Work Order first, then fetch operations & materials.")
+        );
+        return;
+    }
+    if (!(frm.doc.custom_variants || []).length) {
+        frappe.msgprint(__("Add at least one row to the Variants table first."));
+        return;
+    }
     frappe.call({
-        method:
-            "panchhi_manufacturing.panchhi_manufacturing.doctype.style_recipe.style_recipe.get_recipe_details",
-        args: { style_item: frm.doc.production_item, qty: total_qty },
+        method: "panchhi_manufacturing.overrides.work_order.fetch_production_details",
+        args: { work_order: frm.doc.name },
+        freeze: true,
+        freeze_message: __("Fetching operations & materials…"),
         callback(r) {
-            if (!r.message) return;
-            const data = r.message;
-
-            frm.clear_table("operations");
-            data.operations.forEach((row) => frm.add_child("operations", row));
-
-            frm.clear_table("required_items");
-            data.required_items.forEach((row) => frm.add_child("required_items", row));
-
-            // Variant prefill only when the planner hasn't typed any yet.
-            if (!(frm.doc.custom_variants || []).length && data.variants.length) {
-                data.variants.forEach((v) =>
-                    frm.add_child("custom_variants", { ...v, qty: 0 })
-                );
-            }
-
-            frm.refresh_field("operations");
-            frm.refresh_field("required_items");
-            frm.refresh_field("custom_variants");
-            frappe.show_alert({
-                message: __("Applied Style Recipe {0}", [data.recipe]),
-                indicator: "green",
-            });
+            if (r.message) frm.reload_doc();
         },
     });
 };
